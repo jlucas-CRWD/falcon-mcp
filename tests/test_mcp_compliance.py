@@ -74,6 +74,7 @@ MUTATING_TOOL_ALLOWLIST: set[str] = {
     "falcon_create_correlation_rule",
     "falcon_update_correlation_rule",
     "falcon_delete_correlation_rules",
+    "falcon_deploy_correlation_rule_template",
     # quarantine module
     "falcon_update_quarantined_files",
     "falcon_delete_quarantined_files",

@@ -171,6 +171,14 @@ FILTER_HINTS: dict[str, str] = {
         "(e.g. name:~*'*email*'+name:~*'*phishing*') to match regardless of word order. "
         "Status/user_id values are case-sensitive (use lowercase)."
     ),
+    "falcon_search_correlation_rule_templates": (
+        "Common fields: name, description, vendor, outcome (detection|case), "
+        "mitre_attack.tactic_id (e.g. TA0001), mitre_attack.technique_id (e.g. T1059), type. "
+        "Substring/contains match: name:~*'*term*' or description:~*'*term*' (case-insensitive). "
+        "For multi-word searches, split each keyword: name:~*'*lateral*'+name:~*'*movement*'. "
+        "For MITRE-based search, prefer tactic/technique IDs over keywords. "
+        "Ex: mitre_attack.tactic_id:'TA0008' or description:~*'*ransomware*'"
+    ),
     # === Custom IOA Rule Groups ===
     "falcon_search_ioa_rule_groups": (
         "Common fields: platform (windows|mac|linux), name, enabled (true|false), "

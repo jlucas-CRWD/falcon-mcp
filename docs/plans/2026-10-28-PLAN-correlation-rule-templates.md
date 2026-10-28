@@ -12,14 +12,14 @@
 
 | Status | Count |
 |--------|-------|
-| 🔴 NOT_STARTED | 5 |
+| 🔴 NOT_STARTED | 0 |
 | 🟡 IN_PROGRESS | 0 |
-| 🟢 COMPLETED | 0 |
+| 🟢 COMPLETED | 5 |
 | ⚪ BLOCKED | 0 |
 
 ---
 
-### Task 1: Add Template FQL Guide Resource 🔴 NOT_STARTED
+### Task 1: Add Template FQL Guide Resource 🟢 COMPLETED
 <!-- deps: [] | files: ["falcon_mcp/resources/correlation_rules.py", "tests/modules/test_correlation_rules.py"] -->
 
 > **REQUIRED:** Follow skills:test-driven-development (RED-GREEN-REFACTOR cycle)
@@ -335,7 +335,7 @@ and a search strategy section.
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
 
-### Task 2: Add `search_correlation_rule_templates` Tool Registration and Tests 🔴 NOT_STARTED
+### Task 2: Add `search_correlation_rule_templates` Tool Registration and Tests 🟢 COMPLETED
 <!-- deps: [1] | files: ["falcon_mcp/modules/correlation_rules.py", "tests/modules/test_correlation_rules.py"] -->
 
 > **REQUIRED:** Follow skills:test-driven-development (RED-GREEN-REFACTOR cycle)
@@ -643,7 +643,7 @@ aliases for natural-language search.
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
 
-### Task 3: Add `deploy_correlation_rule_template` Tool Registration and Tests 🔴 NOT_STARTED
+### Task 3: Add `deploy_correlation_rule_template` Tool Registration and Tests 🟢 COMPLETED
 <!-- deps: [1, 2] | files: ["falcon_mcp/modules/correlation_rules.py", "tests/modules/test_correlation_rules.py"] -->
 
 > **REQUIRED:** Follow skills:test-driven-development (RED-GREEN-REFACTOR cycle)
@@ -1083,7 +1083,7 @@ are required; everything else falls back to template defaults.
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
 
-### Task 4: Update Existing Annotation Test for Read-Only Tools 🔴 NOT_STARTED
+### Task 4: Update Existing Annotation Test for Read-Only Tools 🟢 COMPLETED
 <!-- deps: [2] | files: ["tests/modules/test_correlation_rules.py"] -->
 
 **Files:**
@@ -1121,7 +1121,7 @@ git commit -m "test(correlation-rules): add template search to read-only annotat
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
 
-### Task 5: Final Validation and Linting 🔴 NOT_STARTED
+### Task 5: Final Validation and Linting 🟢 COMPLETED
 <!-- deps: [1, 2, 3, 4] | files: [] -->
 
 **Step 1: Run all correlation rules tests**

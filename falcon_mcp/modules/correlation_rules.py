@@ -1,5 +1,6 @@
 """Correlation Rules module for Falcon MCP Server."""
 
+import re
 from typing import Any
 
 from mcp.server import FastMCP
@@ -9,10 +10,48 @@ from pydantic import AnyUrl, Field
 
 from falcon_mcp.common.errors import _format_error_response, handle_api_response
 from falcon_mcp.common.logging import get_logger
+from falcon_mcp.common.utils import unwrap_field_default
 from falcon_mcp.modules.base import BaseModule
-from falcon_mcp.resources.correlation_rules import SEARCH_CORRELATION_RULES_FQL_DOCUMENTATION
+from falcon_mcp.resources.correlation_rules import (
+    SEARCH_CORRELATION_RULE_TEMPLATES_FQL_DOCUMENTATION,
+    SEARCH_CORRELATION_RULES_FQL_DOCUMENTATION,
+)
 
 logger = get_logger(__name__)
+
+_DURATION_RE = re.compile(
+    r"(?:@every\s+)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$",
+    re.IGNORECASE,
+)
+
+
+def _parse_duration_seconds(value: str) -> int | None:
+    """Parse a schedule or lookback string to total seconds.
+
+    Accepts both schedule form (@every 1h30m) and lookback form (1h30m).
+    Returns None when the string doesn't match the expected format.
+    """
+    m = _DURATION_RE.match(value.strip())
+    if not m or not any(m.groups()):
+        return None
+    days, hours, minutes, seconds = (int(x or 0) for x in m.groups())
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _validate_lookback_vs_schedule(
+    lookback: str, schedule: str
+) -> dict[str, Any] | None:
+    """Return an error dict when lookback is shorter than schedule, else None."""
+    lb_secs = _parse_duration_seconds(lookback)
+    sc_secs = _parse_duration_seconds(schedule)
+    if lb_secs is None or sc_secs is None:
+        return None
+    if lb_secs < sc_secs:
+        return _format_error_response(
+            f"lookback '{lookback}' ({lb_secs}s) is shorter than schedule '{schedule}' "
+            f"({sc_secs}s). The search window must cover at least one full schedule interval.",
+        )
+    return None
 
 
 class CorrelationRulesModule(BaseModule):
@@ -61,6 +100,24 @@ class CorrelationRulesModule(BaseModule):
             ),
         )
 
+        self._add_tool(
+            server=server,
+            method=self.search_correlation_rule_templates,
+            name="search_correlation_rule_templates",
+        )
+
+        self._add_tool(
+            server=server,
+            method=self.deploy_correlation_rule_template,
+            name="deploy_correlation_rule_template",
+            annotations=ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            ),
+        )
+
     def register_resources(self, server: FastMCP) -> None:
         fql_resource = TextResource(
             uri=AnyUrl("falcon://correlation-rules/search/fql-guide"),
@@ -70,12 +127,29 @@ class CorrelationRulesModule(BaseModule):
         )
         self._add_resource(server, fql_resource)
 
+        template_fql_resource = TextResource(
+            uri=AnyUrl("falcon://correlation-rule-templates/search/fql-guide"),
+            name="falcon_search_correlation_rule_templates_fql_guide",
+            description="Contains the guide for the `filter` param of the `falcon_search_correlation_rule_templates` tool.",
+            text=SEARCH_CORRELATION_RULE_TEMPLATES_FQL_DOCUMENTATION,
+        )
+        self._add_resource(server, template_fql_resource)
+
     def search_correlation_rules(
         self,
         filter: str | None = Field(
             default=None,
-            description="FQL filter expression. See `falcon://correlation-rules/search/fql-guide` for syntax.",
-            examples={"status:'active'+severity:>50", "mitre_attack.tactic_id:'TA0001'"},
+            description=(
+                "FQL filter expression. See `falcon://correlation-rules/search/fql-guide` for syntax. "
+                "IMPORTANT: name/description substring searches require the ~* operator with * wildcards — "
+                "e.g. name:~*'*powershell*' NOT name:'*powershell*'."
+            ),
+            examples={
+                "status:'active'+severity:>50",
+                "mitre_attack.tactic_id:'TA0001'",
+                "name:~*'*powershell*'+status:'active'",
+                "description:~*'*lateral movement*'",
+            },
         ),
         limit: int = Field(
             default=20,
@@ -100,6 +174,9 @@ class CorrelationRulesModule(BaseModule):
         Returns full rule objects; use the `rule_id` field when passing results to update or
         delete tools. Filter with state:'published' to get one result per rule.
         Responses include `pagination.total` (the total number of records matching the filter, or null when the API does not report a count) — use it to answer "how many" questions.
+
+        Severity mapping — use integers in API/FQL calls, show ONLY the name (never the integer) when presenting to the user:
+        10=Informational, 30=Low, 50=Medium, 70=High, 90=Critical.
         """
         result, pagination = self._base_search_with_meta(
             operation="combined_rules_get_v2",
@@ -266,6 +343,11 @@ class CorrelationRulesModule(BaseModule):
             default=None,
             description="Use event ingest time instead of event timestamp for the lookback window.",
         ),
+        schedule: str | None = Field(
+            default=None,
+            description="Updated schedule definition (minimum: @every 0h5m). Example: '@every 1h30m'.",
+            examples={"@every 1h0m", "@every 0h5m", "@every 1h30m", "@every 24h0m"},
+        ),
         mitre_attack: list[dict[str, str]] | None = Field(
             default=None,
             description=(
@@ -284,6 +366,14 @@ class CorrelationRulesModule(BaseModule):
         step needed. To enable/disable a rule, set status to 'active' or 'inactive'.
         Only provided fields are changed; omitted fields retain current values.
         """
+        schedule = unwrap_field_default(schedule)
+        lookback = unwrap_field_default(lookback)
+
+        if schedule is not None and lookback is not None:
+            err = _validate_lookback_vs_schedule(lookback, schedule)
+            if err is not None:
+                return [err]
+
         body: dict[str, Any] = {"id": rule_id}
 
         if name is not None:
@@ -298,6 +388,8 @@ class CorrelationRulesModule(BaseModule):
             body["comment"] = comment
         if mitre_attack is not None:
             body["mitre_attack"] = mitre_attack
+        if schedule is not None:
+            body["operation"] = {"schedule": {"definition": schedule}}
 
         search_fields_set = (
             search_filter is not None
@@ -360,6 +452,237 @@ class CorrelationRulesModule(BaseModule):
             operation="entities_rules_delete_v1",
             query_params={"ids": ids, "comment": comment},
             error_message="Failed to delete Correlation Rules",
+            default_result=[],
+        )
+
+        if self._is_error(result):
+            return [result]
+
+        return result
+
+    def search_correlation_rule_templates(
+        self,
+        filter: str | None = Field(
+            default=None,
+            description=(
+                "FQL filter expression. See `falcon://correlation-rule-templates/search/fql-guide` "
+                "for syntax, MITRE ATT&CK tactic/technique ID mappings, and natural-language "
+                "search strategies."
+            ),
+            examples={
+                "mitre_attack.tactic_id:'TA0008'",
+                "description:~*'*ransomware*'",
+                "name:~*'*powershell*'",
+            },
+        ),
+        limit: int = Field(
+            default=20,
+            ge=1,
+            le=500,
+            description="Maximum number of templates to return. (Max: 500)",
+        ),
+        offset: int | None = Field(
+            default=None,
+            description="Starting index for pagination.",
+        ),
+        sort: str | None = Field(
+            default=None,
+            description="Sort templates. Options: 'created_on', 'created_on|desc', 'last_updated_on', 'last_updated_on|desc'.",
+            examples={"last_updated_on|desc", "created_on"},
+        ),
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Search pre-built Correlation Rule templates and return full template details.
+
+        Use this to discover detection rule templates that can be deployed as live correlation
+        rules. Describe what you want to detect — lateral movement, credential theft, ransomware,
+        phishing, etc. — and consult falcon://correlation-rule-templates/search/fql-guide for
+        MITRE ATT&CK tactic/technique ID mappings and natural-language search strategies.
+        Returns full template objects; use the `id` field when passing results to the deploy tool.
+        Responses include `pagination.total` (the total number of records matching the filter,
+        or null when the API does not report a count) — use it to answer "how many" questions.
+
+        Severity mapping — use integers in API/FQL calls, show ONLY the name (never the integer) when presenting to the user:
+        10=Informational, 30=Low, 50=Medium, 70=High, 90=Critical.
+        """
+        ids_result, pagination = self._base_search_with_meta(
+            operation="queries_templates_get_v1Mixin0",
+            search_params={
+                "filter": filter,
+                "limit": limit,
+                "offset": offset,
+                "sort": sort,
+            },
+            error_message="Failed to search Correlation Rule Templates",
+        )
+
+        if self._is_error(ids_result):
+            return self._format_fql_error_response(
+                [ids_result], filter, SEARCH_CORRELATION_RULE_TEMPLATES_FQL_DOCUMENTATION
+            )
+
+        if not ids_result:
+            return self._build_pagination_envelope([], pagination, filter)
+
+        entities = self._base_get_by_ids(
+            operation="entities_templates_get_v1Mixin0",
+            ids=ids_result,
+            use_params=True,
+        )
+
+        if self._is_error(entities):
+            return self._format_fql_error_response(
+                [entities], filter, SEARCH_CORRELATION_RULE_TEMPLATES_FQL_DOCUMENTATION
+            )
+
+        ordered = self._reorder_by_ids(ids_result, entities, id_field="id")
+
+        return self._build_pagination_envelope(ordered, pagination, filter)
+
+    def deploy_correlation_rule_template(
+        self,
+        template_id: str = Field(
+            description=(
+                "Template ID to deploy. Use the `id` field from "
+                "`falcon_search_correlation_rule_templates` results."
+            ),
+        ),
+        customer_id: str = Field(
+            description="CID of the tenant to deploy the rule in.",
+        ),
+        name: str | None = Field(
+            default=None,
+            description="Override the template's default rule name.",
+        ),
+        severity: int | None = Field(
+            default=None,
+            description="Override severity score. Must be one of: 10, 30, 50, 70, 90.",
+            examples={10, 30, 50, 70, 90},
+        ),
+        status: str = Field(
+            default="active",
+            description="Initial rule status.",
+            examples={"active", "inactive"},
+        ),
+        schedule: str | None = Field(
+            default=None,
+            description="Override the schedule (e.g. '@every 1h0m'). Uses template default if omitted.",
+            examples={"@every 1h0m", "@every 0h5m", "@every 24h0m"},
+        ),
+        lookback: str | None = Field(
+            default=None,
+            description="Override the lookback window (e.g. '1h0m'). Uses template default if omitted.",
+            examples={"1h0m", "24h0m"},
+        ),
+        trigger_mode: str | None = Field(
+            default=None,
+            description="Override trigger mode. Uses template default if omitted.",
+            examples={"summary", "verbose"},
+        ),
+        description: str | None = Field(
+            default=None,
+            description="Override the template's default description.",
+        ),
+        comment: str | None = Field(
+            default=None,
+            description="Audit comment explaining why the template is being deployed.",
+        ),
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Deploy a Correlation Rule template as a live detection rule.
+
+        First fetches the template to get its defaults (CQL query, schedule, severity,
+        MITRE mappings, etc.), then deploys it with any user-provided overrides. Only
+        template_id and customer_id are required — all other fields use the template's
+        built-in values when omitted.
+
+        Typical workflow:
+        1. Use falcon_search_correlation_rule_templates to find a template
+        2. Pass the template's `id` here along with your `customer_id`
+        3. Optionally override name, severity, status, schedule, etc.
+        Returns the created rule record on success.
+        """
+        name = unwrap_field_default(name)
+        severity = unwrap_field_default(severity)
+        status = unwrap_field_default(status)
+        schedule = unwrap_field_default(schedule)
+        lookback = unwrap_field_default(lookback)
+        trigger_mode = unwrap_field_default(trigger_mode)
+        description = unwrap_field_default(description)
+        comment = unwrap_field_default(comment)
+
+        if schedule is not None and lookback is not None:
+            err = _validate_lookback_vs_schedule(lookback, schedule)
+            if err is not None:
+                return [err]
+
+        template_result = self._base_get_by_ids(
+            operation="entities_templates_get_v1Mixin0",
+            ids=[template_id],
+            use_params=True,
+        )
+
+        if self._is_error(template_result):
+            return [template_result]
+
+        if not template_result:
+            return [
+                _format_error_response(
+                    f"Template '{template_id}' not found.",
+                    operation="entities_templates_get_v1Mixin0",
+                )
+            ]
+
+        template = template_result[0]
+        template_search = template.get("search", {})
+        template_operation = template.get("operation", {})
+        template_schedule = template_operation.get("schedule", {})
+
+        deploy_template: dict[str, Any] = {
+            "template_id": template_id,
+            "name": name if name is not None else template.get("name", ""),
+            "severity": severity if severity is not None else template.get("severity", 50),
+            "status": status,
+            "search": {
+                "filter": template_search.get("filter", ""),
+                "outcome": template_search.get("outcome", "detection"),
+                "lookback": lookback
+                if lookback is not None
+                else template_search.get("lookback", "1h0m"),
+                "trigger_mode": trigger_mode
+                if trigger_mode is not None
+                else template_search.get("trigger_mode", "summary"),
+                "execution_mode": template_search.get("execution_mode", ""),
+            },
+            "operation": {
+                "schedule": {
+                    "definition": schedule
+                    if schedule is not None
+                    else template_schedule.get("definition", "@every 1h0m"),
+                },
+            },
+        }
+
+        if template.get("mitre_attack"):
+            deploy_template["mitre_attack"] = template["mitre_attack"]
+
+        if template.get("anomaly"):
+            deploy_template["anomaly"] = template["anomaly"]
+
+        if description is not None:
+            deploy_template["description"] = description
+        elif template.get("description"):
+            deploy_template["description"] = template["description"]
+
+        if comment is not None:
+            deploy_template["comment"] = comment
+
+        body = [{"customer_id": customer_id, "templates": [deploy_template]}]
+
+        response = self.client.command("entities_templates_rules_post_v1", body=body)
+
+        result = handle_api_response(
+            response,
+            operation="entities_templates_rules_post_v1",
+            error_message="Failed to deploy Correlation Rule Template",
             default_result=[],
         )
 
