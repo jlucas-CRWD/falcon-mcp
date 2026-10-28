@@ -164,7 +164,12 @@ FILTER_HINTS: dict[str, str] = {
         "Common fields: name, status (active|inactive), state (published|unpublished|draft), "
         "severity (Integer: 10=Informational|30=Low|50=Medium|70=High|90=Critical; supports range ops e.g. severity:>50), "
         "mitre_attack.tactic_id (e.g. TA0001), mitre_attack.technique_id (e.g. T1059), "
-        "created_on (UTC datetime)."
+        "created_on (UTC datetime). "
+        "Name/description matching: exact name:'...' is case-sensitive; "
+        "for substring/contains use name:~*'*term*' (case-insensitive, matches anywhere). "
+        "For multi-word searches, split each keyword into its own ~* clause "
+        "(e.g. name:~*'*email*'+name:~*'*phishing*') to match regardless of word order. "
+        "Status/user_id values are case-sensitive (use lowercase)."
     ),
     # === Custom IOA Rule Groups ===
     "falcon_search_ioa_rule_groups": (

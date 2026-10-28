@@ -15,8 +15,10 @@ SEARCH_CORRELATION_RULES_FQL_FILTERS = [
         "name",
         "String",
         """
-        Rule name. Supports exact and wildcard match.
-        Ex: name:'Suspicious PowerShell', name:~'PowerShell'
+        Rule name. Exact match is case-sensitive. Use ~* with * wildcards for
+        case-insensitive substring matching.
+        Ex (exact): name:'Suspicious PowerShell'
+        Ex (substring): name:~*'*powershell*'
         """
     ),
     (
@@ -81,8 +83,9 @@ SEARCH_CORRELATION_RULES_FQL_FILTERS = [
         "description",
         "String",
         """
-        Rule description text. Supports wildcard match.
-        Ex: description:~'lateral movement'
+        Rule description text. Use ~* with * wildcards for case-insensitive
+        substring matching.
+        Ex (substring): description:~*'*lateral movement*'
         """
     ),
     (
@@ -125,10 +128,24 @@ SEARCH_CORRELATION_RULES_FQL_DOCUMENTATION = r"""Falcon Query Language (FQL) - S
 field_name:[operator]'value'
 
 === OPERATORS ===
-• = (default): field_name:'value'
-• ~: field_name:~'partial' (contains match, case insensitive)
+• = (default): field_name:'value' (exact match, case-sensitive)
+• ~*: field_name:~*'*term*' (glob/wildcard match, case-insensitive — use * as a
+  wildcard; wrap the term in * for true substring/contains matching)
 • >, >=, <, <=: field_name:>50 (comparison for numbers/timestamps)
 • !: field_name:!'value' (not equal)
+
+=== IMPORTANT: CHOOSING THE RIGHT STRING OPERATOR ===
+• Exact match (must know precise casing): name:'Suspicious PowerShell'
+• Substring/contains match (case-insensitive, anywhere in value): name:~*'*powershell*'
+
+=== BROADENING MULTI-WORD SEARCHES ===
+For multi-word searches, split each keyword into its own ~* clause joined with +.
+This matches regardless of word order, extra whitespace, or intervening words —
+over-fetch broadly, then pick the best matches from the results:
+• name:~*'*email*'+name:~*'*phishing*'
+  Matches "Phishing Email Link Clicked", "Email Phishing Alert", etc.
+• description:~*'*credential*'+description:~*'*theft*'
+  Matches descriptions containing both words in any order.
 
 === DATA TYPES ===
 • String: 'value'
@@ -197,8 +214,8 @@ state:'published'+mitre_attack.tactic_id:'TA0001'
 # Recently updated published rules
 state:'published'+last_updated_on:>'2025-01-01'
 
-# Rules by name (wildcard)
-name:~'PowerShell'
+# Rules by name (case-insensitive substring — finds "powershell" anywhere in the name)
+name:~*'*powershell*'
 
 # Critical active rules
 status:'active'+severity:>=90
@@ -217,4 +234,10 @@ state:'draft'
 
 # Only correlation type rules (exclude behavioral)
 type:'correlation'+status:'active'
+
+# Search description for a keyword (case-insensitive substring)
+description:~*'*phishing*'
+
+# Broad multi-word name search (order-independent, matches both words anywhere)
+name:~*'*email*'+name:~*'*threat*'
 """
