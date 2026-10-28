@@ -21,32 +21,43 @@ class TestCorrelationRulesModule(TestModules):
     # -------------------------------------------------------------------------
 
     def test_register_tools(self):
-        """Test that all 4 correlation rule tools are registered with correct prefixed names."""
+        """Test that all 6 correlation rule tools are registered with correct prefixed names."""
         expected_tools = [
             "falcon_search_correlation_rules",
             "falcon_create_correlation_rule",
             "falcon_update_correlation_rule",
             "falcon_delete_correlation_rules",
+            "falcon_search_correlation_rule_templates",
+            "falcon_deploy_correlation_rule_template",
         ]
         self.assert_tools_registered(expected_tools)
 
     def test_register_resources(self):
-        """Test that the FQL guide resource is registered."""
+        """Test that both FQL guide resources are registered."""
         expected_resources = [
             "falcon_search_correlation_rules_fql_guide",
+            "falcon_search_correlation_rule_templates_fql_guide",
         ]
         self.assert_resources_registered(expected_resources)
+
+    def test_search_templates_tool_annotations(self):
+        """Test that search templates tool uses READ_ONLY_ANNOTATIONS."""
+        self.module.register_tools(self.mock_server)
+        self.assert_tool_annotations(
+            "falcon_search_correlation_rule_templates", READ_ONLY_ANNOTATIONS
+        )
 
     # -------------------------------------------------------------------------
     # Annotation Tests
     # -------------------------------------------------------------------------
 
     def test_read_only_tools_have_default_annotations(self):
-        """Test that search tool uses READ_ONLY_ANNOTATIONS."""
+        """Test that search tools use READ_ONLY_ANNOTATIONS."""
         self.module.register_tools(self.mock_server)
 
         for tool_name in [
             "falcon_search_correlation_rules",
+            "falcon_search_correlation_rule_templates",
         ]:
             self.assert_tool_annotations(tool_name, READ_ONLY_ANNOTATIONS)
 
@@ -328,6 +339,7 @@ class TestCorrelationRulesModule(TestModules):
             lookback=None,
             trigger_mode=None,
             use_ingest_time=None,
+            schedule=None,
             mitre_attack=None,
             comment=None,
         )
@@ -336,6 +348,7 @@ class TestCorrelationRulesModule(TestModules):
         self.assertEqual(body["id"], "r1")
         self.assertEqual(body["name"], "New Name")
         self.assertNotIn("search", body)
+        self.assertNotIn("operation", body)
         self.assertNotIn("severity", body)
         self.assertNotIn("status", body)
 
@@ -361,6 +374,33 @@ class TestCorrelationRulesModule(TestModules):
         self.assertEqual(body["search"]["trigger_mode"], "verbose")
         self.assertEqual(body["search"]["use_ingest_time"], True)
 
+    def test_update_schedule(self):
+        """Test that schedule goes into body['operation']['schedule']['definition']."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": [{"id": "v2", "rule_id": "r1"}]},
+        }
+
+        self.module.update_correlation_rule(
+            rule_id="r1",
+            schedule="@every 1h30m",
+            name=None,
+            description=None,
+            status=None,
+            severity=None,
+            search_filter=None,
+            lookback=None,
+            trigger_mode=None,
+            use_ingest_time=None,
+            mitre_attack=None,
+            comment=None,
+        )
+
+        body = self.mock_client.command.call_args[1]["body"][0]
+        self.assertIn("operation", body)
+        self.assertEqual(body["operation"]["schedule"]["definition"], "@every 1h30m")
+        self.assertNotIn("search", body)
+
     def test_update_error_returns_error_list(self):
         """Test that an update API error is returned wrapped in a list."""
         self.mock_client.command.return_value = {
@@ -373,6 +413,59 @@ class TestCorrelationRulesModule(TestModules):
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertIn("error", result[0])
+
+    def test_update_lookback_shorter_than_schedule_rejected(self):
+        """Test that lookback shorter than schedule is rejected without calling the API."""
+        result = self.module.update_correlation_rule(
+            rule_id="r1",
+            schedule="@every 1h0m",
+            lookback="0h30m",
+        )
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+        self.mock_client.command.assert_not_called()
+
+    def test_update_lookback_equal_to_schedule_allowed(self):
+        """Test that lookback equal to schedule passes validation."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": [{"id": "v2", "rule_id": "r1"}]},
+        }
+
+        result = self.module.update_correlation_rule(
+            rule_id="r1",
+            schedule="@every 1h0m",
+            lookback="1h0m",
+        )
+
+        self.mock_client.command.assert_called_once()
+        self.assertIsInstance(result, list)
+
+    def test_update_only_schedule_no_validation(self):
+        """Test that providing only schedule (no lookback) skips validation."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": [{"id": "v2", "rule_id": "r1"}]},
+        }
+
+        result = self.module.update_correlation_rule(rule_id="r1", schedule="@every 2h0m")
+
+        self.mock_client.command.assert_called_once()
+        self.assertIsInstance(result, list)
+
+    def test_update_only_lookback_no_validation(self):
+        """Test that providing only lookback (no schedule) skips validation."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": [{"id": "v2", "rule_id": "r1"}]},
+        }
+
+        result = self.module.update_correlation_rule(rule_id="r1", lookback="0h30m")
+
+        self.mock_client.command.assert_called_once()
+        self.assertIsInstance(result, list)
 
     # -------------------------------------------------------------------------
     # Delete Tests
@@ -476,6 +569,394 @@ class TestCorrelationRulesModule(TestModules):
 
         call_args = self.mock_client.command.call_args
         self.assertIn(long_value, call_args[1]["parameters"]["filter"])
+
+    # -------------------------------------------------------------------------
+    # Search Templates Tests
+    # -------------------------------------------------------------------------
+
+    def test_search_templates_success(self):
+        """Test searching templates uses query+hydrate pattern and returns full objects."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {
+                    "resources": ["tmpl-1", "tmpl-2"],
+                    "meta": {"pagination": {"total": 2}},
+                },
+            },
+            {
+                "status_code": 200,
+                "body": {"resources": [
+                    {"id": "tmpl-1", "name": "Lateral Movement Detection", "severity": 70},
+                    {"id": "tmpl-2", "name": "Credential Theft Alert", "severity": 90},
+                ]},
+            },
+        ]
+
+        result = self.module.search_correlation_rule_templates(
+            filter="mitre_attack.tactic_id:'TA0008'",
+            limit=10,
+        )
+
+        first_call = self.mock_client.command.call_args_list[0]
+        self.assertEqual(first_call[0][0], "queries_templates_get_v1Mixin0")
+        self.assertEqual(first_call[1]["parameters"]["filter"], "mitre_attack.tactic_id:'TA0008'")
+        self.assertEqual(first_call[1]["parameters"]["limit"], 10)
+
+        second_call = self.mock_client.command.call_args_list[1]
+        self.assertEqual(second_call[0][0], "entities_templates_get_v1Mixin0")
+
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["id"], "tmpl-1")
+        self.assertEqual(result["results"][1]["id"], "tmpl-2")
+        self.assertEqual(result["pagination"]["total"], 2)
+
+    def test_search_templates_empty_results(self):
+        """Test that empty query results return clean empty envelope."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": []},
+        }
+
+        result = self.module.search_correlation_rule_templates(
+            filter="name:'nonexistent'"
+        )
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["results"], [])
+        self.assertEqual(result["filter_used"], "name:'nonexistent'")
+        self.assertNotIn("fql_guide", result)
+        self.mock_client.command.assert_called_once()
+
+    def test_search_templates_query_error_returns_fql_guide(self):
+        """Test that query-step API errors return a dict with fql_guide."""
+        self.mock_client.command.return_value = {
+            "status_code": 400,
+            "body": {"errors": [{"message": "Invalid filter"}]},
+        }
+
+        result = self.module.search_correlation_rule_templates(filter="bad!!!")
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("fql_guide", result)
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 1)
+        self.assertIn("error", result["results"][0])
+
+    def test_search_templates_hydrate_error_returns_fql_guide(self):
+        """Test that hydrate-step API errors return a dict with fql_guide."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {
+                    "resources": ["tmpl-1"],
+                    "meta": {"pagination": {"total": 1}},
+                },
+            },
+            {
+                "status_code": 500,
+                "body": {"errors": [{"message": "Internal error"}]},
+            },
+        ]
+
+        result = self.module.search_correlation_rule_templates()
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("fql_guide", result)
+
+    def test_search_templates_preserves_sort_order(self):
+        """Test that hydrated results are reordered to match query ID order."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {
+                    "resources": ["tmpl-a", "tmpl-b", "tmpl-c"],
+                    "meta": {"pagination": {"total": 3}},
+                },
+            },
+            {
+                "status_code": 200,
+                "body": {"resources": [
+                    {"id": "tmpl-c", "name": "C"},
+                    {"id": "tmpl-a", "name": "A"},
+                    {"id": "tmpl-b", "name": "B"},
+                ]},
+            },
+        ]
+
+        result = self.module.search_correlation_rule_templates(
+            sort="last_updated_on|desc"
+        )
+
+        self.assertEqual(result["results"][0]["id"], "tmpl-a")
+        self.assertEqual(result["results"][1]["id"], "tmpl-b")
+        self.assertEqual(result["results"][2]["id"], "tmpl-c")
+
+    # -------------------------------------------------------------------------
+    # Deploy Template Tests
+    # -------------------------------------------------------------------------
+
+    def test_deploy_template_tool_annotations(self):
+        """Test that deploy template tool has non-read-only, non-destructive, non-idempotent annotations."""
+        self.module.register_tools(self.mock_server)
+        self.assert_tool_annotations(
+            "falcon_deploy_correlation_rule_template",
+            ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            ),
+        )
+
+    def test_deploy_template_success_with_defaults(self):
+        """Test deploying a template with only required params uses template defaults."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {"resources": [{
+                    "id": "tmpl-1",
+                    "name": "Lateral Movement via SMB",
+                    "description": "Detects SMB lateral movement",
+                    "severity": 70,
+                    "search": {
+                        "filter": "#event_simpleName=NetworkConnect",
+                        "outcome": "detection",
+                        "lookback": "2h0m",
+                        "trigger_mode": "summary",
+                        "execution_mode": "standard",
+                    },
+                    "operation": {
+                        "schedule": {"definition": "@every 2h0m"},
+                    },
+                    "mitre_attack": [
+                        {"tactic_id": "TA0008", "technique_id": "T1021"},
+                    ],
+                }]},
+            },
+            {
+                "status_code": 200,
+                "body": {"resources": [
+                    {"id": "v1", "rule_id": "r1", "name": "Lateral Movement via SMB"},
+                ]},
+            },
+        ]
+
+        result = self.module.deploy_correlation_rule_template(
+            template_id="tmpl-1",
+            customer_id="cid123",
+        )
+
+        first_call = self.mock_client.command.call_args_list[0]
+        self.assertEqual(first_call[0][0], "entities_templates_get_v1Mixin0")
+
+        second_call = self.mock_client.command.call_args_list[1]
+        self.assertEqual(second_call[0][0], "entities_templates_rules_post_v1")
+        body = second_call[1]["body"]
+        self.assertEqual(body[0]["customer_id"], "cid123")
+        tmpl = body[0]["templates"][0]
+        self.assertEqual(tmpl["template_id"], "tmpl-1")
+        self.assertEqual(tmpl["name"], "Lateral Movement via SMB")
+        self.assertEqual(tmpl["severity"], 70)
+        self.assertEqual(tmpl["status"], "active")
+        self.assertEqual(tmpl["search"]["filter"], "#event_simpleName=NetworkConnect")
+        self.assertEqual(tmpl["search"]["lookback"], "2h0m")
+        self.assertEqual(tmpl["search"]["trigger_mode"], "summary")
+        self.assertEqual(tmpl["operation"]["schedule"]["definition"], "@every 2h0m")
+        self.assertEqual(tmpl["mitre_attack"], [{"tactic_id": "TA0008", "technique_id": "T1021"}])
+        self.assertEqual(tmpl["description"], "Detects SMB lateral movement")
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+
+    def test_deploy_template_with_overrides(self):
+        """Test that user-provided overrides take precedence over template defaults."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {"resources": [{
+                    "id": "tmpl-1",
+                    "name": "Template Name",
+                    "severity": 50,
+                    "search": {
+                        "filter": "#event=Test",
+                        "outcome": "detection",
+                        "lookback": "1h0m",
+                        "trigger_mode": "summary",
+                        "execution_mode": "standard",
+                    },
+                    "operation": {"schedule": {"definition": "@every 1h0m"}},
+                }]},
+            },
+            {
+                "status_code": 200,
+                "body": {"resources": [{"id": "v1", "rule_id": "r1"}]},
+            },
+        ]
+
+        self.module.deploy_correlation_rule_template(
+            template_id="tmpl-1",
+            customer_id="cid123",
+            name="My Custom Name",
+            severity=90,
+            status="inactive",
+            schedule="@every 24h0m",
+            lookback="24h0m",
+            trigger_mode="verbose",
+            description="My custom description",
+            comment="Deploying for testing",
+        )
+
+        body = self.mock_client.command.call_args_list[1][1]["body"]
+        tmpl = body[0]["templates"][0]
+        self.assertEqual(tmpl["name"], "My Custom Name")
+        self.assertEqual(tmpl["severity"], 90)
+        self.assertEqual(tmpl["status"], "inactive")
+        self.assertEqual(tmpl["search"]["lookback"], "24h0m")
+        self.assertEqual(tmpl["search"]["trigger_mode"], "verbose")
+        self.assertEqual(tmpl["operation"]["schedule"]["definition"], "@every 24h0m")
+        self.assertEqual(tmpl["description"], "My custom description")
+        self.assertEqual(tmpl["comment"], "Deploying for testing")
+
+    def test_deploy_template_not_found(self):
+        """Test that a missing template returns error without calling deploy."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": []},
+        }
+
+        result = self.module.deploy_correlation_rule_template(
+            template_id="nonexistent",
+            customer_id="cid123",
+        )
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+        self.mock_client.command.assert_called_once()
+
+    def test_deploy_template_hydrate_error(self):
+        """Test that a hydrate API error is returned without calling deploy."""
+        self.mock_client.command.return_value = {
+            "status_code": 500,
+            "body": {"errors": [{"message": "Internal error"}]},
+        }
+
+        result = self.module.deploy_correlation_rule_template(
+            template_id="tmpl-1",
+            customer_id="cid123",
+        )
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+        self.mock_client.command.assert_called_once()
+
+    def test_deploy_template_deploy_error(self):
+        """Test that a deploy API error is returned wrapped in a list."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {"resources": [{
+                    "id": "tmpl-1",
+                    "name": "Template",
+                    "severity": 50,
+                    "search": {
+                        "filter": "#event=Test",
+                        "outcome": "detection",
+                        "lookback": "1h0m",
+                        "trigger_mode": "summary",
+                        "execution_mode": "standard",
+                    },
+                    "operation": {"schedule": {"definition": "@every 1h0m"}},
+                }]},
+            },
+            {
+                "status_code": 403,
+                "body": {"errors": [{"message": "Access denied"}]},
+            },
+        ]
+
+        result = self.module.deploy_correlation_rule_template(
+            template_id="tmpl-1",
+            customer_id="cid123",
+        )
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+
+    def test_deploy_template_lookback_shorter_than_schedule_rejected(self):
+        """Test that deploy is rejected without API calls when lookback < schedule."""
+        result = self.module.deploy_correlation_rule_template(
+            template_id="tmpl-1",
+            customer_id="cid123",
+            schedule="@every 2h0m",
+            lookback="1h0m",
+        )
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+        self.mock_client.command.assert_not_called()
+
+    def test_deploy_template_lookback_equal_to_schedule_allowed(self):
+        """Test that deploy passes validation when lookback equals schedule."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {"resources": [{
+                    "id": "tmpl-1",
+                    "name": "Test Template",
+                    "severity": 70,
+                    "search": {"filter": "#test", "outcome": "detection", "lookback": "1h0m", "trigger_mode": "summary", "execution_mode": "scheduled"},
+                    "operation": {"schedule": {"definition": "@every 1h0m"}},
+                }]},
+            },
+            {
+                "status_code": 200,
+                "body": {"resources": [{"rule_id": "new-rule"}]},
+            },
+        ]
+
+        result = self.module.deploy_correlation_rule_template(
+            template_id="tmpl-1",
+            customer_id="cid123",
+            schedule="@every 1h0m",
+            lookback="1h0m",
+        )
+
+        self.assertEqual(self.mock_client.command.call_count, 2)
+        self.assertIsInstance(result, list)
+
+    def test_deploy_template_only_schedule_override_no_validation(self):
+        """Test that providing only schedule override (no lookback override) skips validation."""
+        self.mock_client.command.side_effect = [
+            {
+                "status_code": 200,
+                "body": {"resources": [{
+                    "id": "tmpl-1",
+                    "name": "Test Template",
+                    "severity": 70,
+                    "search": {"filter": "#test", "outcome": "detection", "lookback": "1h0m", "trigger_mode": "summary", "execution_mode": "scheduled"},
+                    "operation": {"schedule": {"definition": "@every 1h0m"}},
+                }]},
+            },
+            {
+                "status_code": 200,
+                "body": {"resources": [{"rule_id": "new-rule"}]},
+            },
+        ]
+
+        result = self.module.deploy_correlation_rule_template(
+            template_id="tmpl-1",
+            customer_id="cid123",
+            schedule="@every 2h0m",
+        )
+
+        self.assertEqual(self.mock_client.command.call_count, 2)
+        self.assertIsInstance(result, list)
 
 
 if __name__ == "__main__":
