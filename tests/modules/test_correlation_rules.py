@@ -21,7 +21,7 @@ class TestCorrelationRulesModule(TestModules):
     # -------------------------------------------------------------------------
 
     def test_register_tools(self):
-        """Test that all 6 correlation rule tools are registered with correct prefixed names."""
+        """Test that all 8 correlation rule tools are registered with correct prefixed names."""
         expected_tools = [
             "falcon_search_correlation_rules",
             "falcon_create_correlation_rule",
@@ -29,6 +29,8 @@ class TestCorrelationRulesModule(TestModules):
             "falcon_delete_correlation_rules",
             "falcon_search_correlation_rule_templates",
             "falcon_deploy_correlation_rule_template",
+            "falcon_get_correlation_rule",
+            "falcon_get_correlation_rule_template",
         ]
         self.assert_tools_registered(expected_tools)
 
@@ -58,6 +60,8 @@ class TestCorrelationRulesModule(TestModules):
         for tool_name in [
             "falcon_search_correlation_rules",
             "falcon_search_correlation_rule_templates",
+            "falcon_get_correlation_rule",
+            "falcon_get_correlation_rule_template",
         ]:
             self.assert_tool_annotations(tool_name, READ_ONLY_ANNOTATIONS)
 
@@ -109,8 +113,12 @@ class TestCorrelationRulesModule(TestModules):
         self.mock_client.command.return_value = {
             "status_code": 200,
             "body": {"resources": [
-                {"id": "v1", "rule_id": "r1", "name": "Test Rule", "severity": 70},
-                {"id": "v2", "rule_id": "r2", "name": "Test Rule 2", "severity": 30},
+                {"id": "v1", "rule_id": "r1", "name": "Test Rule", "severity": 70,
+                 "search": {"filter": "#event=Test", "lookback": "1h0m"},
+                 "operation": {"schedule": {"definition": "@every 1h0m"}},
+                 "notifications": [], "customer_id": "cid123"},
+                {"id": "v2", "rule_id": "r2", "name": "Test Rule 2", "severity": 30,
+                 "search": {"filter": "#event=Other"}, "operation": {}},
             ]},
         }
 
@@ -133,6 +141,13 @@ class TestCorrelationRulesModule(TestModules):
         self.assertEqual(len(result["results"]), 2)
         self.assertEqual(result["results"][0]["rule_id"], "r1")
         self.assertEqual(result["results"][1]["rule_id"], "r2")
+
+        # Verify slim projection strips non-summary fields
+        for rule in result["results"]:
+            self.assertNotIn("search", rule)
+            self.assertNotIn("operation", rule)
+            self.assertNotIn("notifications", rule)
+            self.assertNotIn("customer_id", rule)
 
     def test_search_with_filter(self):
         """Test that filter param is passed through to the API call."""
@@ -177,6 +192,62 @@ class TestCorrelationRulesModule(TestModules):
         self.assertIn("results", result)
         self.assertEqual(len(result["results"]), 1)
         self.assertIn("error", result["results"][0])
+
+    # -------------------------------------------------------------------------
+    # Get Rule Tests
+    # -------------------------------------------------------------------------
+
+    def test_get_correlation_rule_success(self):
+        """Test getting a single rule returns the full unfiltered object."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": [
+                {"id": "v1", "rule_id": "r1", "name": "Test Rule", "severity": 70,
+                 "search": {"filter": "#event=Test", "lookback": "1h0m"},
+                 "operation": {"schedule": {"definition": "@every 1h0m"}}},
+            ]},
+        }
+
+        result = self.module.get_correlation_rule(rule_id="r1")
+
+        self.mock_client.command.assert_called_once()
+        call_args = self.mock_client.command.call_args
+        self.assertEqual(call_args[0][0], "combined_rules_get_v2")
+        self.assertEqual(call_args[1]["parameters"]["filter"], "rule_id:'r1'")
+        self.assertEqual(call_args[1]["parameters"]["limit"], 1)
+
+        # Full object returned — non-slim fields preserved
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["rule_id"], "r1")
+        self.assertIn("search", result[0])
+        self.assertIn("operation", result[0])
+
+    def test_get_correlation_rule_not_found(self):
+        """Test that a missing rule returns a clean error."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": []},
+        }
+
+        result = self.module.get_correlation_rule(rule_id="nonexistent")
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+
+    def test_get_correlation_rule_api_error(self):
+        """Test that an API error is returned wrapped in a list."""
+        self.mock_client.command.return_value = {
+            "status_code": 500,
+            "body": {"errors": [{"message": "Internal error"}]},
+        }
+
+        result = self.module.get_correlation_rule(rule_id="r1")
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
 
     # -------------------------------------------------------------------------
     # Create Tests
@@ -587,8 +658,12 @@ class TestCorrelationRulesModule(TestModules):
             {
                 "status_code": 200,
                 "body": {"resources": [
-                    {"id": "tmpl-1", "name": "Lateral Movement Detection", "severity": 70},
-                    {"id": "tmpl-2", "name": "Credential Theft Alert", "severity": 90},
+                    {"id": "tmpl-1", "name": "Lateral Movement Detection", "severity": 70,
+                     "search": {"filter": "#event=NetworkConnect"}, "operation": {},
+                     "license_details": {}, "execution_mode": "standard", "type": "correlation"},
+                    {"id": "tmpl-2", "name": "Credential Theft Alert", "severity": 90,
+                     "search": {"filter": "#event=Auth"}, "operation": {},
+                     "license_details": {}, "type": "correlation"},
                 ]},
             },
         ]
@@ -611,6 +686,14 @@ class TestCorrelationRulesModule(TestModules):
         self.assertEqual(result["results"][0]["id"], "tmpl-1")
         self.assertEqual(result["results"][1]["id"], "tmpl-2")
         self.assertEqual(result["pagination"]["total"], 2)
+
+        # Verify slim projection strips non-summary fields
+        for tmpl in result["results"]:
+            self.assertNotIn("search", tmpl)
+            self.assertNotIn("operation", tmpl)
+            self.assertNotIn("license_details", tmpl)
+            self.assertNotIn("execution_mode", tmpl)
+            self.assertNotIn("type", tmpl)
 
     def test_search_templates_empty_results(self):
         """Test that empty query results return clean empty envelope."""
@@ -692,6 +775,62 @@ class TestCorrelationRulesModule(TestModules):
         self.assertEqual(result["results"][0]["id"], "tmpl-a")
         self.assertEqual(result["results"][1]["id"], "tmpl-b")
         self.assertEqual(result["results"][2]["id"], "tmpl-c")
+
+    # -------------------------------------------------------------------------
+    # Get Template Tests
+    # -------------------------------------------------------------------------
+
+    def test_get_correlation_rule_template_success(self):
+        """Test getting a single template returns the full unfiltered object."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": [
+                {"id": "tmpl-1", "name": "Lateral Movement Detection", "severity": 70,
+                 "search": {"filter": "#event=NetworkConnect", "lookback": "2h0m"},
+                 "operation": {"schedule": {"definition": "@every 2h0m"}},
+                 "license_details": {"tier": "standard"}},
+            ]},
+        }
+
+        result = self.module.get_correlation_rule_template(id="tmpl-1")
+
+        self.mock_client.command.assert_called_once()
+        call_args = self.mock_client.command.call_args
+        self.assertEqual(call_args[0][0], "entities_templates_get_v1Mixin0")
+
+        # Full object returned — non-slim fields preserved
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], "tmpl-1")
+        self.assertIn("search", result[0])
+        self.assertIn("operation", result[0])
+        self.assertIn("license_details", result[0])
+
+    def test_get_correlation_rule_template_not_found(self):
+        """Test that a missing template returns a clean error."""
+        self.mock_client.command.return_value = {
+            "status_code": 200,
+            "body": {"resources": []},
+        }
+
+        result = self.module.get_correlation_rule_template(id="nonexistent")
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+
+    def test_get_correlation_rule_template_api_error(self):
+        """Test that an API error is returned wrapped in a list."""
+        self.mock_client.command.return_value = {
+            "status_code": 500,
+            "body": {"errors": [{"message": "Internal error"}]},
+        }
+
+        result = self.module.get_correlation_rule_template(id="tmpl-1")
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
 
     # -------------------------------------------------------------------------
     # Deploy Template Tests

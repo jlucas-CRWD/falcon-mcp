@@ -4,7 +4,9 @@ Falcon API Client for MCP Server
 This module provides the Falcon API client and authentication utilities for the Falcon MCP server.
 """
 
+import base64
 import functools
+import json
 import os
 import platform
 import sys
@@ -91,10 +93,28 @@ class FalconClient:
         # lock, several threads could observe a stale token at once and each fire its
         # own POST /oauth2/token. The lock guards only the refresh, never the API call.
         self._token_lock = threading.Lock()
+        self._cid: str | None = None
 
         logger.debug("Initialized Falcon client with base URL: %s", self.base_url)
         if self.member_cid:
             logger.debug("Flight Control member_cid: %s", self.member_cid)
+
+    def resolve_cid(self) -> str | None:
+        """Resolve the Customer ID from the authenticated session.
+
+        Queries the sensor-download CCID endpoint to obtain the tenant CID.
+        The result is cached after the first successful call.  Requires the
+        ``sensor-download:read`` API scope.
+        """
+        if self._cid is not None:
+            return self._cid
+        resp = self.command("GetSensorInstallersCCIDByQuery")
+        resources = resp.get("body", {}).get("resources", [])
+        if resources:
+            # CCID format is "HEX-CHECKSUM"; strip the checksum suffix.
+            self._cid = resources[0].lower().replace("-", "")[:32]
+            return self._cid
+        return None
 
     @property
     def token_status(self) -> int | None:
