@@ -17,18 +17,37 @@ Correlation Rules module for CrowdStrike Falcon.
 
 **Required scopes:** `Correlation Rules:read`
 
-Search NG-SIEM Correlation Rules and return full rule details.
+Search NG-SIEM Correlation Rules and return summary rule details.
 
 Use this to find detection rules by name, status, severity, or MITRE tactic/technique.
 Consult falcon://correlation-rules/search/fql-guide before constructing filter expressions.
-Returns full rule objects; use the `rule_id` field when passing results to update or
+Returns summary rule objects (rule_id, name, description, severity, status, state, mitre_attack, template_id, user_id, created_on, last_updated_on); use the `rule_id` field when passing results to update or
 delete tools. Filter with state:'published' to get one result per rule.
 Responses include `pagination.total` (the total number of records matching the filter, or null when the API does not report a count) — use it to answer "how many" questions.
+Use falcon_get_correlation_rule to retrieve the full rule object including the CQL query, schedule, execution history, and notification config.
+
+Severity mapping — use integers in API/FQL calls, show only the name when presenting to the user:
+10=Informational, 30=Low, 50=Medium, 70=High, 90=Critical.
 
 **Example prompts:**
 
 - "Show me all active high-severity correlation rules"
 - "Find correlation rules covering lateral movement tactics"
+
+### `falcon_get_correlation_rule`
+
+**Required scopes:** `Correlation Rules:read`
+
+Get full details for a single NG-SIEM Correlation Rule.
+
+Returns the complete rule object including the CQL query, schedule, execution
+history, notification config, and all metadata. Use this to inspect a rule
+before modifying it or to troubleshoot execution details.
+
+**Example prompts:**
+
+- "Show me the full details of this correlation rule"
+- "What CQL query does this rule use?"
 
 ### `falcon_create_correlation_rule`
 
@@ -72,7 +91,7 @@ Only provided fields are changed; omitted fields retain current values.
 
 **Required scopes:** `Correlation Rules:write`
 
-Permanently delete NG-SIEM Correlation Rules by rule ID.
+Permanently delete one or more NG-SIEM Correlation Rules by rule IDs.
 
 Removes the specified rules and all their versions. This action cannot be undone —
 use falcon_search_correlation_rules to confirm IDs before deleting. Returns an
@@ -82,6 +101,78 @@ empty list on success.
 
 - "Delete the test correlation rule we created"
 
+### `falcon_search_correlation_rule_templates`
+
+**Required scopes:** `Correlation Rules:read`
+
+Search pre-built Correlation Rule templates and return summary template details.
+
+Use this to discover detection rule templates that can be deployed as live correlation
+rules. Describe what you want to detect — lateral movement, credential theft, ransomware,
+phishing, etc. — and consult falcon://correlation-rule-templates/search/fql-guide for
+MITRE ATT&CK tactic/technique ID mappings and natural-language search strategies.
+Returns summary template objects (id, name, description, severity, vendors, mitre_attack, author, created_on, last_updated_on); use the `id` field when passing results to the deploy tool.
+Responses include `pagination.total` (the total number of records matching the filter,
+or null when the API does not report a count) — use it to answer "how many" questions.
+Use falcon_get_correlation_rule_template to retrieve the full template including the CQL query, schedule, lookback, and trigger configuration.
+
+Each template has a `vendors` field listing which data sources it requires.
+Templates with vendors: ['CrowdStrike'] use native Falcon sensor data and need no
+data connector. Other vendors require an active data connector. To check what data
+is available or what connectors are needed, see
+falcon://data-connectors/data-sources/mapping-guide.
+
+Severity mapping — use integers in API/FQL calls, show only the name when presenting to the user:
+10=Informational, 30=Low, 50=Medium, 70=High, 90=Critical.
+
+**Example prompts:**
+
+- "Find correlation rule templates for detecting lateral movement"
+- "Show me templates related to ransomware or credential theft"
+- "What templates can I deploy using only native Falcon sensor data?"
+
+### `falcon_get_correlation_rule_template`
+
+**Required scopes:** `Correlation Rules:read`
+
+Get full details for a single Correlation Rule template.
+
+Returns the complete template object including the CQL query, schedule, lookback,
+trigger configuration, and license details. Use this to inspect a template's
+detection logic before deploying it.
+
+**Example prompts:**
+
+- "Show me the full detection logic for this template"
+- "What does this template's CQL query look for?"
+
+### `falcon_deploy_correlation_rule_template`
+
+> [!NOTE]
+> This tool modifies data.
+
+**Required scopes:** `Correlation Rules:write`
+
+Deploy a Correlation Rule template as a live detection rule.
+
+First fetches the template to get its defaults (CQL query, schedule, severity,
+MITRE mappings, etc.), then deploys it with any user-provided overrides. Only
+`template_id` and `customer_id` are required — all other fields use the template's
+built-in values when omitted.
+
+Typical workflow:
+1. Use `falcon_search_correlation_rule_templates` to find a template
+2. Pass the template's `id` here along with your `customer_id`
+3. Optionally override name, severity, status, schedule, etc.
+
+Returns the created rule record on success.
+
+**Example prompts:**
+
+- "Deploy the lateral movement template as an active rule"
+- "Deploy this template but set severity to critical and status to inactive"
+
 ## Resources
 
 - **`falcon://correlation-rules/search/fql-guide`**: Contains the guide for the `filter` param of the `falcon_search_correlation_rules` tool.
+- **`falcon://correlation-rule-templates/search/fql-guide`**: Contains the guide for the `filter` param of the `falcon_search_correlation_rule_templates` tool, including MITRE ATT&CK tactic/technique ID mappings and natural-language search strategies.
